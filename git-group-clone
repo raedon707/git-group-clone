@@ -1,0 +1,215 @@
+#!/bin/bash
+
+help() {
+  cat <<EOF
+  Usage: $(basename "$0") [options]
+
+  Options:
+    -h, --help            Show this help message and exit
+    -p, --project-path    Specify the project directory
+    -t, --private-token   Specify private token (https://gitlab.com/-/user_settings/personal_access_tokens).
+    -s, --scheme          Specify the git scheme (ssh or http)
+    -b, --branch          Specify default branch to set in every repo, (If not exists it will set the default branch).
+    -i, --group-id        Specify group id to clone
+
+  Examples:
+    $(basename "$0") -p ./example_path -s http -b main -i 1234 -t example_token
+    $(basename "$0") -p ./example_path -s http -i 1234 -t example_token
+  
+  Author: Raedon707 (sprajapati566@gmail.com)
+  github: https://github.com/raedon707/git-group-clone
+EOF
+exit 0
+}
+
+arguments=$(getopt -o h:p:t:s:b:i --long help,project-path:,private-token:,scheme:,branch:,group-id: -- "$@")
+eval set -- "$arguments"
+
+while true; do
+  case "$1" in
+    -h|--help)
+      help
+      shift
+    ;;
+    -p|--project-path)
+      project_path="$2"
+      shift 2
+    ;;
+    -t|--private-token)
+      private_token="$2"
+      shift 2
+    ;;
+    -s|--scheme)
+      git_scheme="$2"
+      shift 2
+    ;;
+    -b|--branch)
+      default_branch="$2";
+      shift 2
+    ;;
+    -i|--group-id)
+      group_id="$2";
+      shift 2
+    ;;
+    --)
+      if [ -n "$2" ]; then
+        echo "Unknown option $2"
+        help
+      fi
+
+      shift
+      break
+    ;;
+    \?|*)
+      echo "Invalid option: -$2" >&2
+      help
+    ;;
+  esac
+done
+
+# # TODO: implement other git hosts
+git_domain="https://gitlab.com"
+
+# Check if the provided directory to clone projects is a valid directory.
+if [ ! -d "$project_path" ]; then
+  echo "Invalid directory"
+  echo "User -h for help"
+  help
+fi
+
+git_repo_url_prepend_string=null
+
+# Check and configure script according to the ssh or http scheme
+if [ $git_scheme == "ssh" ]; then
+  git_repo_url_prepend_string='git@gitlab.com:'
+  echo "You have selected SSH scheme, please make sure you ssh is configured with gitlab..."
+elif [ $git_scheme == "http" ]; then
+  git_repo_url_prepend_string=https://oauth2:$private_token@gitlab.com/
+else
+  echo "Invalid scheme"
+  echo "User -h for help, and see supported schemes"
+  help
+fi
+
+if [ ! -n "$group_id" ]; then
+  help
+fi
+
+# Function: to_lower_case
+# Description: This function converts string to lowercase string.
+# Parameters:
+#   $1 - string.
+# Returns:
+#   string
+# Example Usage:
+#   to_lower_case "Hello_World"
+to_lower_case () {
+  echo "$1" | tr -d '"' | tr '[:upper:]' '[:lower:]'
+}
+
+# Function: check_or_create_directory
+# Description: This function checks and cerates directory to store projects.
+# Parameters:
+#   $1 - string (Base path of the projects)
+#   $1 - string (Directory name to subgroups for the project)
+# Returns:
+#   string (Path to store subgroup projects)
+# Example Usage:
+#   check_or_create_directory "./" "user"
+check_or_create_directory() {
+  local base_path=$1
+  local dir_name=$(to_lower_case $2)
+  local path=$base_path/$dir_name
+
+  if [ -d "$path" ]; then
+    echo "Repository $path already exists, skipping..."
+  else
+    mkdir -p $path
+  fi
+
+  echo "$path"
+}
+
+# Function: clone_projects
+# Description: This function processes a JSON array of projects and extracts the 'name' and 'repo' fields.
+# Parameters:
+#   $1 - An array of project objects.
+# Returns:
+#   void.
+# Example Usage:
+#   process_projects '[{"name": "Project 1", "repo": "https://gitlab.com/<project_path>"}, {"name": "Project 2", "repo": "https://gitlab.com/<project_path>"}]'
+clone_projects() {
+  local data=$1
+  local path_to_store_projects=$2
+
+  echo "$data" | jq -c '.[]' | while read line; do
+    echo '=====================================================' 
+    local path=$(echo $line | jq -r '.path')
+    local repo_path=$(echo $line | jq -r '.path_with_namespace')
+
+    local repo="$git_repo_url_prepend_string$repo_path.git"
+    local project_path=$path_to_store_projects/$path
+
+    if [ -d "$project_path" ]; then
+      if [ -d "$project_path/.git" ]; then
+        echo "Git repo $path_to_store_projects/$path already exists, skipping..."
+      else
+        git clone $repo $project_path
+      fi
+    else
+      git clone $repo $project_path
+    fi
+
+    if [ -n "$default_branch" ]; then
+      if git -C "$project_path" rev-parse --verify "$default_branch" &>/dev/null; then
+        git -C $project_path checkout $default_branch
+      else
+        echo "$default_branch does not exists in $project_path, setting to default branch..."
+      fi
+    fi
+
+    if [ $git_scheme == "http" ]; then
+      git -C $project_path remote set-url origin $(echo $line | jq -r '.http_url_to_repo')
+    fi
+
+  done
+}
+
+# Function: clone_from_gitlab
+# Description: This function clones repos from gitlab and gitlab like custom domains.
+# Returns:
+#   void.
+# Example Usage:
+#   clone_from_gitlab
+clone_from_gitlab () {
+  local group_id=$1
+  local path_to_store_projects=$2
+
+  local response=$(curl -s -X GET --header "PRIVATE-TOKEN: $private_token" "$git_domain/api/v4/groups/$group_id/projects")
+  local projects=$(echo "$response" | jq '.')
+
+  if [ "$(echo "$projects" | jq 'length')" -ne 0 ]; then
+    clone_projects "$projects" "$path_to_store_projects"
+  fi
+
+  local subgroups=$(curl -s -X GET --header "PRIVATE-TOKEN: $private_token" "$git_domain/api/v4/groups/$group_id/subgroups")
+  if [ "$(echo "$subgroups" | jq 'length')" -ne 0 ]; then
+    echo "$subgroups" | jq -r '.[] |
+      .id as $id |
+      .name as $name |
+      "id: \($id), name: \($name)"' | while IFS=',' read -r line; do
+        local id=$(echo $line | cut -d',' -f1 | cut -d':' -f2 | xargs)
+        local name=$(echo $line | cut -d',' -f2 | cut -d':' -f2 | xargs)
+
+        clone_from_gitlab $id $(check_or_create_directory $path_to_store_projects $name)
+    done
+
+  else
+    return 0
+  fi
+
+  return 0
+}
+
+clone_from_gitlab "$group_id" "$project_path"
+exit 0
