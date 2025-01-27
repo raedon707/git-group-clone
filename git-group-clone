@@ -22,14 +22,23 @@ EOF
 exit 0
 }
 
-arguments=$(getopt -o h:p:t:s:b:i --long help,project-path:,private-token:,scheme:,branch:,group-id: -- "$@")
+# Installing dependencies
+if ! command -v jq &> /dev/null; then
+  echo "Installing jq..."
+  sudo apt-get install jq
+fi
+if ! command -v git &> /dev/null; then
+  echo "Installing git..."
+  sudo apt-get install git
+fi
+
+arguments=$(getopt -o h:p:t:s:b:i: --long help,project-path:,private-token:,scheme:,branch:,group-id: -- "$@")
 eval set -- "$arguments"
 
 while true; do
   case "$1" in
     -h|--help)
       help
-      shift
     ;;
     -p|--project-path)
       project_path="$2"
