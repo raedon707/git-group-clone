@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# TODO: include excluding certain group ids as well.
+
 help() {
   cat <<EOF
   Usage: $(basename "$0") [options]
@@ -15,19 +17,19 @@ help() {
   Examples:
     $(basename "$0") -p ./example_path -s http -b main -i 1234 -t example_token
     $(basename "$0") -p ./example_path -s http -i 1234 -t example_token
-  
+
   Author: Raedon707 (sprajapati566@gmail.com)
   github: https://github.com/raedon707/git-group-clone
 EOF
-exit 0
+  exit 0
 }
 
 # Installing dependencies
-if ! command -v jq &> /dev/null; then
+if ! command -v jq &>/dev/null; then
   echo "Installing jq..."
   sudo apt-get install jq
 fi
-if ! command -v git &> /dev/null; then
+if ! command -v git &>/dev/null; then
   echo "Installing git..."
   sudo apt-get install git
 fi
@@ -37,46 +39,46 @@ eval set -- "$arguments"
 
 while true; do
   case "$1" in
-    -h|--help)
+  -h | --help)
+    help
+    ;;
+  -p | --project-path)
+    project_path="$2"
+    shift 2
+    ;;
+  -t | --private-token)
+    private_token="$2"
+    shift 2
+    ;;
+  -s | --scheme)
+    git_scheme="$2"
+    shift 2
+    ;;
+  -b | --branch)
+    default_branch="$2"
+    shift 2
+    ;;
+  -i | --group-id)
+    group_id="$2"
+    shift 2
+    ;;
+  --)
+    if [ -n "$2" ]; then
+      echo "Unknown option $2"
       help
-    ;;
-    -p|--project-path)
-      project_path="$2"
-      shift 2
-    ;;
-    -t|--private-token)
-      private_token="$2"
-      shift 2
-    ;;
-    -s|--scheme)
-      git_scheme="$2"
-      shift 2
-    ;;
-    -b|--branch)
-      default_branch="$2";
-      shift 2
-    ;;
-    -i|--group-id)
-      group_id="$2";
-      shift 2
-    ;;
-    --)
-      if [ -n "$2" ]; then
-        echo "Unknown option $2"
-        help
-      fi
+    fi
 
-      shift
-      break
+    shift
+    break
     ;;
-    \?|*)
-      echo "Invalid option: -$2" >&2
-      help
+  \? | *)
+    echo "Invalid option: -$2" >&2
+    help
     ;;
   esac
 done
 
-# # TODO: implement other git hosts
+# TODO: implement other git hosts
 git_domain="https://gitlab.com"
 
 # Check if the provided directory to clone projects is a valid directory.
@@ -112,7 +114,7 @@ fi
 #   string
 # Example Usage:
 #   to_lower_case "Hello_World"
-to_lower_case () {
+to_lower_case() {
   echo "$1" | tr -d '"' | tr '[:upper:]' '[:lower:]'
 }
 
@@ -126,13 +128,11 @@ to_lower_case () {
 # Example Usage:
 #   check_or_create_directory "./" "user"
 check_or_create_directory() {
-  local base_path=$1
+  local base_path=$(echo "$1" | sed 's:/*$::')
   local dir_name=$(to_lower_case $2)
   local path=$base_path/$dir_name
 
-  if [ -d "$path" ]; then
-    echo "Repository $path already exists, skipping..."
-  else
+  if [ ! -d "$path" ]; then
     mkdir -p $path
   fi
 
@@ -151,8 +151,7 @@ clone_projects() {
   local data=$1
   local path_to_store_projects=$2
 
-  echo "$data" | jq -c '.[]' | while read line; do
-    echo '=====================================================' 
+  echo "$data" | jq -c '.[]' | while read -r line; do
     local path=$(echo $line | jq -r '.path')
     local repo_path=$(echo $line | jq -r '.path_with_namespace')
 
@@ -161,12 +160,14 @@ clone_projects() {
 
     if [ -d "$project_path" ]; then
       if [ -d "$project_path/.git" ]; then
-        echo "Git repo $path_to_store_projects/$path already exists, skipping..."
+        echo -e "Git repo $path_to_store_projects/$path already exists, skipping..."
       else
-        git clone $repo $project_path
+        echo -n "Cloning repo: $repo_path.git into $project_path"
+        git clone $repo $project_path &>/dev/null && echo -e "\033[1;32m ✓\033[0m" || echo -e "\e[31m ✘\e[0m"
       fi
     else
-      git clone $repo $project_path
+      echo -n "Cloning repo: $repo_path.git into $project_path"
+      git clone $repo $project_path &>/dev/null && echo -e "\033[1;32m ✓\033[0m" || echo -e "\e[31m ✘\e[0m"
     fi
 
     if [ -n "$default_branch" ]; then
@@ -190,29 +191,26 @@ clone_projects() {
 #   void.
 # Example Usage:
 #   clone_from_gitlab
-clone_from_gitlab () {
+clone_from_gitlab() {
   local group_id=$1
   local path_to_store_projects=$2
 
-  local response=$(curl -s -X GET --header "PRIVATE-TOKEN: $private_token" "$git_domain/api/v4/groups/$group_id/projects")
-  local projects=$(echo "$response" | jq '.')
-
-  if [ "$(echo "$projects" | jq 'length')" -ne 0 ]; then
+  local projects=$(curl -s -X GET --header "PRIVATE-TOKEN: $private_token" "$git_domain/api/v4/groups/$group_id/projects")
+  if [ $(echo "$projects" | jq 'type') == "\"object\"" ]; then
+    echo API response for $git_domain/api/v4/groups/$group_id/projects: $projects
+  elif [ "$(echo "$projects" | jq 'length')" -ne 0 ]; then
     clone_projects "$projects" "$path_to_store_projects"
   fi
 
   local subgroups=$(curl -s -X GET --header "PRIVATE-TOKEN: $private_token" "$git_domain/api/v4/groups/$group_id/subgroups")
-  if [ "$(echo "$subgroups" | jq 'length')" -ne 0 ]; then
-    echo "$subgroups" | jq -r '.[] |
-      .id as $id |
-      .name as $name |
-      "id: \($id), name: \($name)"' | while IFS=',' read -r line; do
-        local id=$(echo $line | cut -d',' -f1 | cut -d':' -f2 | xargs)
-        local name=$(echo $line | cut -d',' -f2 | cut -d':' -f2 | xargs)
-
-        clone_from_gitlab $id $(check_or_create_directory $path_to_store_projects $name)
+  if [ $(echo "$subgroups" | jq 'type') == "\"object\"" ]; then
+    echo API response for $git_domain/api/v4/groups/$group_id/subgroups: $subgroups
+  elif [ "$(echo "$subgroups" | jq 'length')" -ne 0 ]; then
+    echo "$subgroups" | jq -c '.[]' | while read -r line; do
+      local id=$(echo $line | jq -r '.id')
+      local path=$(echo $line | jq -r '.path')
+      clone_from_gitlab $id $(check_or_create_directory $path_to_store_projects $path)
     done
-
   else
     return 0
   fi
